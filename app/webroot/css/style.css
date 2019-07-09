@@ -150,3 +150,43 @@ progress{
     box-shadow: 0 2.5em 0 0 #FFF;
   }
 }
+form#frmInsertConfig {
+    margin-bottom: 0px;
+}
+form.form-floppy-upload {
+    margin-bottom: 10px;
+}
+#optionsCheckbox0 {          
+    margin-top: 10px;
+}
+.statusreport table tr td{
+	border: black 2px double;
+	padding: 5px;	
+}
+
+th.thStatus  { 
+    background-color: #0099ff; 
+    color: #ffffff; 
+    font-weight: bold; 
+	border: black 2px double;
+    padding: 5px;
+}
+
+td.aliveGood {
+    background-color: #C6EFCE; 
+    color: #006153; 
+}
+
+td.aliveBad  {
+    background-color: #FFC7CE;
+    color: #9C0006;
+}
+
+td.valueCenter {
+    text-align:center; 
+}
+
+td.valueLeft   {
+    text-align:left;
+}
+

@@ -35,10 +35,6 @@
 //    - mouse drag
 //    - better orientation support
 
-$(document).ready(function () {
- 	CosmosEx.Remote.init();
-});
-
 var CosmosEx = CosmosEx || {};
 CosmosEx.Remote=function(){
     	//Mouse position states
@@ -473,7 +469,7 @@ CosmosEx.Remote=function(){
 						},100);
 					}
                 });
-            //Start recievibg screencast from ST
+            //Start recieving screencast from ST
             bindClickHelper("button#screencast",function(e){
 					if( typeof CosmosEx.Screencast!="undefined" && !$(this).hasClass("disabled") ){
 						$(this).attr("disabled", "disabled");

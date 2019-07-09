@@ -1,0 +1,9 @@
+Linux image info
+----------------
+
+- usage: for running Cosmos Ex device (not for gcc builds)
+- boot files on DOS boot partition: with support of RPi B+
+- flash_stm32: with support for DS1818 on Hans
+- flash_xilinx: with support for XC9572 (slowed down)
+- app and first firmware: Cosmos Ex 2.0 (ACSI / SCSI version, november 2015)
+

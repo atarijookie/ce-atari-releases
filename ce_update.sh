@@ -5,23 +5,8 @@
 
 echo -e "\nUpdating CosmosEx from internet, this will take a while\nDO NOT POWER OFF THE DEVICE!!!\n"
 
-# download the update package
-cd /tmp/
-rm -f /tmp/*.zip /tmp/*.hex /tmp/*.csv /tmp/*.xsvf
-
-echo "\n>>> Downloading the update from web..."
-wget http://joo.kie.sk/cosmosex/update/ce_update.zip
-
-if [ ! -f "/tmp/ce_update.zip" ]
-then
-	echo "File /tmp/ce_update.zip not found, did the download fail?"
-	exit 0
-fi
-
-unzip -o /tmp/ce_update.zip -d /tmp
-
-# update the app
-/ce/update/update_app.sh
+# download changes from repo
+git pull
 
 # update xilinx
 /ce/update/update_xilinx.sh
@@ -43,9 +28,6 @@ if [ "$mm" = "HWFWMM: MISMATCH" ]; then
 fi 
 #--------------
 
-rm -f /tmp/*.zip /tmp/*.hex /tmp/*.csv /tmp/*.xsvf
 sync
 
 echo -e "\nUpdate done, you may start the /ce/ce_start.sh now!\n";
-
-

@@ -33,10 +33,10 @@ else
     echo "cosmosex IS running"
 fi
 
-distro=$( /ce/whichdistro.sh ) 
+distro=$( /ce/whichdistro.sh )
 
-if [ "$distro" = "raspbian_stretch" ]; then
-    # check status through systemctl 
+if [ "$distro" = "stretch" ]; then
+    # check status through systemctl
     sysctl=$( systemctl status cosmosex )
     sc_notfound=$( echo $sysctl | grep 'Loaded: not-found' | wc -l )
     sc_running=$( echo $sysctl | grep 'Active: active' | wc -l )

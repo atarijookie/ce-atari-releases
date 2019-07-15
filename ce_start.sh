@@ -29,9 +29,9 @@ ce_is_running() {
 rm -f /ce/update/doupdate.sh
 
 # check for distro, run systemctl only on stretch
-distro=$( /ce/whichdistro.sh ) 
+distro=$( /ce/whichdistro.sh )
 
-if [ "$distro" = "raspbian_stretch" ]; then
+if [ "$distro" = "stretch" ]; then
     # if should start using systemctl, do it
     if [ "$1" != "nosystemctl" ]; then
         # try to find out if cosmosex.service is installed

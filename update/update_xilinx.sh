@@ -2,11 +2,6 @@
 
 echo "XILINX firmware writing script."
 
-# if the updatelist.csv file exists, make a copy of it, because running '/ce/app/cosmosex hwinfo' will delete it, and we need it!
-if [ -f /tmp/updatelist.csv ]; then
-    cp -f /tmp/updatelist.csv /tmp/updatelist_copy.csv
-fi
-
 # initialize variables
 is36=0
 is72=0
@@ -42,7 +37,8 @@ if [ "$is36" -eq "1" ]; then
     # write the XC9536 firmware
     echo "Detected XC9536 chip, will write firmware"
     /ce/update/flash_xilinx /ce/update/xilinx.xsvf
-    cat /tmp/updatelist_copy.csv | grep 'xilinx' | awk -F ',' '{print $2}' > /ce/update/xilinx_current.txt 
+    cp /ce/update/xilinx.version /ce/update/xilinx.current          # copy flashed version into current version file
+    ln -fs /ce/update/xilinx.version /ce/update/xilinx_used.version # xilinx_user.version will point to file from which we took the version, so when that file changes, we will know we need to update xilinx 
     exit
 fi
 
@@ -50,15 +46,16 @@ fi
 if [ "$is72" -eq "1" ]; then
     echo "Detected XC9572 chip, now will detect if it's ACSI or SCSI"
     out=$( /ce/app/cosmosex hwinfo )
-    
+
     isAcsi=$( echo "$out" | grep 'ACSI' )
     isScsi=$( echo "$out" | grep 'SCSI' )
-    
+
     # if it's ACSI version
     if [ -n "$isAcsi" ]; then
         echo "Detected XC9572 chip and ACSI interface, will write firmware"
         /ce/update/flash_xilinx /ce/update/xlnx2a.xsvf
-        cat /tmp/updatelist_copy.csv | grep 'xlnx2a' | awk -F ',' '{print $2}' > /ce/update/xilinx_current.txt 
+        cp /ce/update/xlnx2a.version /ce/update/xilinx.current          # copy flashed version into current version file
+        ln -fs /ce/update/xlnx2a.version /ce/update/xilinx_used.version # xilinx_user.version will point to file from which we took the version, so when that file changes, we will know we need to update xilinx 
         exit
     fi
 
@@ -66,10 +63,11 @@ if [ "$is72" -eq "1" ]; then
     if [ -n "$isScsi" ]; then
         echo "Detected XC9572 chip and SCSI interface, will write firmware"
         /ce/update/flash_xilinx /ce/update/xlnx2s.xsvf
-        cat /tmp/updatelist_copy.csv | grep 'xlnx2s' | awk -F ',' '{print $2}' > /ce/update/xilinx_current.txt 
+        cp /ce/update/xlnx2s.version /ce/update/xilinx.current          # copy flashed version into current version file
+        ln -fs /ce/update/xlnx2s.version /ce/update/xilinx_used.version # xilinx_user.version will point to file from which we took the version, so when that file changes, we will know we need to update xilinx 
         exit
     fi
-    
+
     echo "Detected XC9572 chip but didn't write any firmware :("
 fi
 

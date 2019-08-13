@@ -1,7 +1,6 @@
 #!/bin/sh
 while :
-do 
-
+do
     #try to get pid of process
     pid=$(pidof cosmosex)
 

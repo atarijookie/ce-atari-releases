@@ -93,8 +93,8 @@ Folder TESTS\
 
 ce_tsthd.tos - Tests ACSI/SCSI communi-
                cation with several tests
-               (Stresstests, R/W checks-
-               ums etc.)
+               (Stresstests, R/W
+               checksums etc.)
 
 ce_tstfd.tos - Tests Floppy Disk Emu-
                lation

@@ -59,16 +59,11 @@ handle_service()
 
     # should just report status?
     if [ "$1" = "status" ]; then
-        echo ""
-        echo "CosmosEx services:"
-
         if [ "$app_running" = "1" ]; then
             printf "    %-20s [RUNNING]\n" "$service_name"
         else
             printf "    %-20s [STOPPED]\n" "$service_name"
         fi
-
-        echo ""
     fi
 
     # should start?
@@ -93,6 +88,9 @@ handle_service()
 }
 
 # go through all the service config files and start / stop / status those services
+echo ""
+echo "CosmosEx services:"
+
 for found in /ce/services/*
 do
     if [ -d "$found" ]; then            # if found thing is a dir
@@ -103,3 +101,5 @@ do
         fi
     fi
 done
+
+echo ""

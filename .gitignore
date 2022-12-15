@@ -1,2 +1,4 @@
-settings/
 update/*.current
+__pycache__/
+venv/
+ 

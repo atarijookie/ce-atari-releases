@@ -1,16 +1,18 @@
 #!/bin/sh 
 
 #
+# This script is here to start / stop / get status of all the CosmosEx services.
+#
 # You can use it as follows:
 #   - ce start  -- start all services
 #   - ce stop   -- stop all services
 #   - ce status -- get the status of all services
 #
 
-# check if running as root
+# check if running as root, and if not, execute this script with sudo
 if [ $(id -u) != 0 ]; then
-  echo "Please run this as root"
-  exit 1
+  sudo $0 "$@"
+  exit 0
 fi
 
 # check if one of the supported commands was supplied
@@ -50,46 +52,57 @@ handle_service()
 
     pid_file=$( get_setting_from_file PID_FILE $2 )
     exec_file=$( get_setting_from_file EXEC_FILE $2 )
-    
+
     # now always check first if the app is running
     app_running=$( check_if_pid_running $pid_file )
 
-    service_dir=$( dirname $2 )
-    service_name=$( basename $service_dir )
+    service_dir=$( dirname $2 )                 # directory of the service, e.g. /ce/services/mounter
+    service_name=$( basename $service_dir )     # name of the service, deducted from the service dir, e.g.: /ce/services/mounter dir will result in 'mounter'
 
     # should just report status?
     if [ "$1" = "status" ]; then
         if [ "$app_running" = "1" ]; then
-            printf "    %-20s [RUNNING]\n" "$service_name"
+            printf "    %-20s [ UP ]\n" "$service_name"
         else
-            printf "    %-20s [STOPPED]\n" "$service_name"
+            printf "    %-20s [    ]\n" "$service_name"
         fi
     fi
 
     # should start?
     if [ "$1" = "start" ]; then
         if [ "$app_running" != "1" ]; then          # not running? start
-            echo "Starting service $service_name"
+            printf "    %-20s starting\n" "$service_name"
             dir_before=$( pwd )                     # remember current dir
-            cd $service_dir                         # change to service dir
+            cd $service_dir                         # change to service dir - so the service will be executed from its own dir - to create file there, to use relative paths to its dir
             eval "$exec_file > /dev/null 2>&1 &"    # start the executable file / script file
             cd $dir_before                          # go back to previous dir
+        else
+            printf "    %-20s running\n" "$service_name"
         fi
     fi
 
     # should stop?
     if [ "$1" = "stop" ]; then
         if [ "$app_running" = "1" ]; then       # is running? stop
-            echo "Stopping service $service_name"
+            printf "    %-20s stopping\n" "$service_name"
             app_pid_number=$( cat $pid_file 2> /dev/null )
             kill -9 "$app_pid_number" > /dev/null 2>&1
+        else
+            printf "    %-20s not running\n" "$service_name"
         fi
     fi
 }
 
 # go through all the service config files and start / stop / status those services
 echo ""
-echo "CosmosEx services:"
+
+if [ "$1" = "start" ]; then 
+    echo "Starting CosmosEx services:"
+elif [ "$1" = "stop" ]; then 
+    echo "Stopping CosmosEx services:"
+elif [ "$1" = "status" ]; then 
+    echo "CosmosEx services statuses:"
+fi
 
 for found in /ce/services/*
 do

@@ -1,12 +1,8 @@
 #!/bin/sh 
 
 #
-# This script is here to start / stop / get status of all the CosmosEx services.
-#
-# You can use it as follows:
-#   - ce start  -- start all services
-#   - ce stop   -- stop all services
-#   - ce status -- get the status of all services
+# This script is here to start / stop / get status of all the CosmosEx services and other additional tasks. 
+# See help to get more details.
 #
 
 # check if running as root, and if not, execute this script with sudo
@@ -15,10 +11,37 @@ if [ $(id -u) != 0 ]; then
   exit 0
 fi
 
-# check if one of the supported commands was supplied
-if [ "$1" != "status" ] && [ "$1" != "start" ] && [ "$1" != "stop" ]; then
-  echo "Please specify only valid commands: start | stop | status"
+show_help()
+{
+    echo ""
+    echo "This is CosmosEx helper script. Allowed commands are:"
+    echo "  start  - start all the required CosmosEx services"
+    echo "  stop   - stop all the running CosmosEx services "
+    echo "  status - show what CosmosEx services are running"
+    echo "  config - run the CosmosEx configuration tool"
+    echo "  help   - this help message"
+    echo ""
+}
+
+# no supported command was used? Show help.
+if [ "$1" != "status" ] && [ "$1" != "start" ] && [ "$1" != "stop" ] && \
+   [ "$1" != "conf" ] && [ "$1" != "config" ] && \
+   [ "$1" != "help" ] && [ "$1" != "--help" ]; then
+  show_help
   exit 1
+fi
+
+# help was requested? Show help.
+if [ "$1" = "help" ] || [ "$1" = "--help" ]; then
+  show_help
+  exit 0
+fi
+
+# Should run the config tool? Run it!
+if [ "$1" = "conf" ] || [ "$1" = "config" ]; then
+  cd /ce/services/config/
+  ./ce_conf.sh
+  exit 0
 fi
 
 check_if_pid_running()

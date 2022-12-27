@@ -1,52 +1,29 @@
 import queue
 import os
+import json
+from urllib.request import urlopen
+from urllib.parse import urlencode
 from urwid_helpers import dialog
 import subprocess
 import codecs
+import socket
 import logging
 from logging.handlers import RotatingFileHandler
 from zipfile import ZipFile
+from dotenv import load_dotenv
 
 app_log = logging.getLogger()
 
-queue_download = queue.Queue()      # queue that holds things to download
-queue_send = queue.Queue()          # queue that holds things to send to core
-
-terminal_cols = 80  # should be 40 for ST low, 80 for ST mid
-terminal_rows = 23
-items_per_page = 19
-
 main = None
-main_loop = None
 current_body = None
 should_run = True
 
-LOG_DIR = '/var/log/ce/'
-LOG_FILE = os.path.join(LOG_DIR, 'ce_fdd_py.log')
-
-DATA_DIR = '/var/run/ce/'
-FILE_SLOTS = os.path.join(DATA_DIR, 'slots.txt')
-
-core_sock_name = os.path.join(DATA_DIR, 'core.sock')
-
-DOWNLOAD_STORAGE_DIR = os.path.join(DATA_DIR, 'download_storage')
-
-PATH_TO_LISTS = "/ce/lists/"                                    # where the lists are stored locally
-BASE_URL = "http://joo.kie.sk/cosmosex/update/"                 # base url where the lists will be stored online
-LIST_OF_LISTS_FILE = "list_of_lists.csv"
-LIST_OF_LISTS_URL = BASE_URL + LIST_OF_LISTS_FILE               # where the list of lists is on web
-LIST_OF_LISTS_LOCAL = PATH_TO_LISTS + LIST_OF_LISTS_FILE        # where the list of lists is locally
-
-list_of_lists = []      # list of dictionaries: {name, url, filename}
 list_index = 0          # index of list in list_of_lists which will be worked on
-list_of_items = []      # list containing all the items from file (unfiltered)
-list_of_items_filtered = []     # filtered list of items (based on search string)
 pile_current_page = None        # urwid pile containing buttons for current page
 search_phrase = ""
 
 main_loop = None        # main loop of the urwid library
 text_pages = None       # widget holding the text showing current and total pages
-page_current = 1        # currently shown page
 text_status = None      # widget holding status text
 last_focus_path = None  # holds last focus path to widget which had focus before going to widget subpage
 terminal_cols = 80      # should be 40 for ST low, 80 for ST mid
@@ -59,6 +36,30 @@ view_object = None
 
 last_status_string = ''
 new_status_string = ''
+
+
+def load_dotenv_config():
+    """ Try to load the dotenv configuration file.
+    First try to see if there's an override path for this config file specified in the env variables.
+    Then try the normal installation path for dotenv on ce: /ce/services/.env
+    If that fails, try to find and use local dotenv file used during development - .env in your local dir
+    """
+
+    # First try to see if there's an override path for this config file specified in the env variables.
+    path = os.environ.get('CE_DOTENV_PATH')
+
+    if path and os.path.exists(path):       # path in env found and it really exists, use it
+        load_dotenv(dotenv_path=path)
+        return
+
+    # Then try the normal installation path for dotenv on ce: /ce/services/.env
+    ce_dot_env_file = '/ce/services/.env'
+    if os.path.exists(ce_dot_env_file):
+        load_dotenv(dotenv_path=ce_dot_env_file)
+        return
+
+    # If that fails, try to find and use local dotenv file used during development - .env in your local dir
+    load_dotenv()
 
 
 def on_unhandled_keys_generic(key):
@@ -124,8 +125,9 @@ def get_storage_path():
     storage_path = None
 
     # does this symlink exist?
-    if os.path.exists(DOWNLOAD_STORAGE_DIR) and os.path.islink(DOWNLOAD_STORAGE_DIR):
-        storage_path = os.readlink(DOWNLOAD_STORAGE_DIR)    # read the symlink
+    download_storage_dir = os.getenv('DOWNLOAD_STORAGE_DIR')
+    if os.path.exists(download_storage_dir) and os.path.islink(download_storage_dir):
+        storage_path = os.readlink(download_storage_dir)    # read the symlink
 
         if not os.path.exists(storage_path):                # symlink source doesn't exist? reset path to None
             storage_path = None
@@ -139,34 +141,28 @@ def get_storage_path():
     return storage_path
 
 
-def load_list_from_csv(csv_filename):
-    list_of_items = []
+def send_to_socket(sock_path, item):
+    """ send an item to core """
+    try:
+        app_log.debug(f"sending {item} to {sock_path}")
+        json_item = json.dumps(item)   # dict to json
 
-    app_log.debug(f'will load .csv: {csv_filename}')
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        sock.connect(sock_path)
+        sock.send(json_item.encode('utf-8'))
+        sock.close()
+    except Exception as ex:
+        app_log.debug(f"failed to send {item} - {str(ex)}")
 
-    # read whole file into memory, split to lines
-    file = open(csv_filename, "r")
-    data = file.read()
-    file.close()
 
-    data = data.replace("<br>", "\n")
-    lines = data.split("\n")
+def send_to_core(item):
+    """ send an item to core """
+    send_to_socket(os.getenv('CORE_SOCK_PATH'), item)
 
-    # go through the lines, extract individual items
-    for line in lines:
-        cols = line.split(",", 2)                       # split to 3 items - url, crc, content (which is also coma-separated, but we want it as 1 piece here)
 
-        if len(cols) < 3:                               # not enough cols in this row? skip it
-            continue
-
-        item = {'url': cols[0], 'crc': cols[1], 'content': cols[2]}     # add {name, url} to item
-
-        url_filename = os.path.basename(item['url'])    # get filename from url
-        item['filename'] = url_filename
-
-        list_of_items.append(item)
-
-    return list_of_items
+def send_to_taskq(item):
+    """ send an item to task queue """
+    send_to_socket(os.getenv('TASKQ_SOCK_PATH'), item)
 
 
 def slot_insert(slot_index, path_to_image):
@@ -174,24 +170,23 @@ def slot_insert(slot_index, path_to_image):
     :param slot_index: index of slot to eject - 0-2
     :param path_to_image: filesystem path to image file which should be inserted
     """
-    global queue_send
     item = {'module': 'floppy', 'action': 'insert', 'slot': slot_index, 'image': path_to_image}
-    queue_send.put(item)
+    send_to_core(item)
 
 
 def slot_eject(slot_index):
     """ eject floppy image from specified slot
     :param slot_index: index of slot to eject - 0-2
     """
-    global queue_send
     item = {'module': 'floppy', 'action': 'eject', 'slot': slot_index}
-    queue_send.put(item)
+    send_to_core(item)
 
 
 def file_seems_to_be_image(path_to_image, check_if_exists):
     """ check if the supplied path seems to be image or not """
-    if not os.path.exists(path_to_image) or not os.path.isfile(path_to_image):
-        return False, f"Error accessing {path_to_image}"
+    if check_if_exists:
+        if not os.path.exists(path_to_image) or not os.path.isfile(path_to_image):
+            return False, f"Error accessing {path_to_image}"
 
     path = path_to_image.strip()
     path = os.path.basename(path)       # get just filename
@@ -206,15 +201,17 @@ def file_seems_to_be_image(path_to_image, check_if_exists):
         return True, None
 
     if ext != 'zip':                    # not a zip file and not any of supported extensions? fail
-        return False, f"Files with '{ext}' extension not supported."
+        return False, f"ext not supported: {ext}"
 
     # if we got here, it's a zip file
     try:
         with ZipFile(path_to_image, 'r') as zipObj:
             files = zipObj.namelist()       # Get list of files names in zip
 
-            for file in files:
-                if file_seems_to_be_image(file, False):
+            for file in files:              # go through all the files in zip
+                success, message = file_seems_to_be_image(file, False)
+
+                if success:
                     app_log.debug(f"the ZIP file {path_to_image} contains valid image {file}")
                     return True, None
 
@@ -227,11 +224,33 @@ def file_seems_to_be_image(path_to_image, check_if_exists):
 def log_config():
     log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(funcName)s(%(lineno)d) %(message)s')
 
-    os.makedirs(LOG_DIR, exist_ok=True)
-    my_handler = RotatingFileHandler(LOG_FILE, mode='a', maxBytes=1024 * 1024, backupCount=1)
+    log_dir = os.getenv('LOG_DIR')
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, 'ce_fdd_py.log')
+
+    os.makedirs(log_dir, exist_ok=True)
+    my_handler = RotatingFileHandler(log_file, mode='a', maxBytes=1024 * 1024, backupCount=1)
     my_handler.setFormatter(log_formatter)
     my_handler.setLevel(logging.DEBUG)
 
     app_log = logging.getLogger()
     app_log.setLevel(logging.DEBUG)
     app_log.addHandler(my_handler)
+
+
+def get_data_from_webserver(url_path, get_params=None):
+    port = os.getenv('WEBSERVER_PORT')
+    url = f"http://127.0.0.1:{port}/{url_path}"
+
+    if get_params:                          # if get params were provided, add them to url
+        query_string = urlencode(get_params)
+        url = url + "?" + query_string
+
+    response = urlopen(url)                 # store the response of URL
+    data_json = json.loads(response.read()) # json string to dict
+    return data_json
+
+
+def get_list_of_lists():
+    return get_data_from_webserver("download/list_of_lists")
+

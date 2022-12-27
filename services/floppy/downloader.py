@@ -2,6 +2,7 @@ import os
 import urwid
 import logging
 import shared
+from shared import get_data_from_webserver
 from urwid_helpers import create_my_button, dialog, create_header_footer
 from paginated_view import PaginatedView
 
@@ -12,9 +13,19 @@ class DownloaderView(PaginatedView):
     list_index = 0
     list_of_items = []
 
+    def __init__(self):
+        super().__init__()
+        self.list_item = {}
+
+    def download_image_file(self, item):
+        storage_path = shared.get_storage_path()                    # find out if we got storage path
+        destination = os.path.join(storage_path, item['filename'])  # create local path
+        item = {'action': 'download_floppy', 'url': item['url'], 'destination': destination}
+        shared.send_to_taskq(item)
+
     def on_show_selected_list(self, button, choice):
-        self.list_index = choice     # store the chosen list index
-        self.title = "CE FDD: " + shared.list_of_lists[shared.list_index]['name']
+        self.list_item = choice     # store the chosen list index
+        self.title = "CE FDD: " + self.list_item['name']
 
         # find out if we got storage path
         storage_path = shared.get_storage_path()
@@ -34,15 +45,7 @@ class DownloaderView(PaginatedView):
         # try to load the list into memory
 
         self.list_of_items = []
-
-        error = None
-        try:
-            self.list_of_items = shared.load_list_from_csv(shared.list_of_lists[self.list_index]['filename'])
-        except Exception as ex:
-            error = str(ex)
-
-        # first the filtered list is the same as original list
-        self.list_of_items_filtered = self.list_of_items
+        error = self.fetch_current_page_from_server()
 
         # if failed to load, show error
         if error:
@@ -52,6 +55,24 @@ class DownloaderView(PaginatedView):
         shared.on_unhandled_keys_handler = self.on_unhandled_keys        # call this handler on arrows and other unhandled keys
 
         self.show_current_page(None)
+
+    def fetch_current_page_from_server(self):
+        error = None
+        try:
+            # create zero-base index, but page_number could be 0
+            page_zbi = (self.page_current - 1) if self.page_current > 1 else 0
+
+            params = {'list_index': self.list_item['index'], 'page': page_zbi,
+                      'search_phrase': self.search_phrase, 'items_per_page': shared.items_per_page}
+
+            resp = get_data_from_webserver('download/imagelist', get_params=params)
+            self.list_of_items = resp.get('imageList', [])      # list of images is stored under imageList key
+            self.list_of_items_filtered = self.list_of_items
+            self.total_pages = resp.get('totalPages', 0)        # total count of pages available
+        except Exception as ex:
+            error = str(ex)
+
+        return error
 
     def on_unhandled_keys(self, key):
         """ when some key is not handled, this function is called """
@@ -96,14 +117,14 @@ class DownloaderView(PaginatedView):
             return
 
         if is_download:                             # should download?
-            shared.queue_download.put(user_data)
+            self.download_image_file(item)
             return
 
     def download_image(self, button, item):
         """ when image has been selected for download """
         app_log.debug("download image {}".format(item['filename']))
-        shared.queue_download.put(item)        # enqueue image
-        self.show_current_page(None)         # show current list page
+        self.download_image_file(item)           # enqueue image
+        self.show_current_page(None)        # show current list page
 
     def insert_image(self, button, item_slot):
         """ when image should be inserted to slot """
@@ -183,3 +204,21 @@ class DownloaderView(PaginatedView):
 
         btn_text = "{:13} {}".format(item['filename'], item_content)  # format string as filename + content
         return btn_text
+
+    def get_list_for_current_page(self):
+        """ fetch images list for current page and return them to caller """
+        self.fetch_current_page_from_server()
+        return self.list_of_items
+
+    def search_changed(self, widget, search_string):
+        """ this gets called when search string changes """
+        self.search_phrase = search_string
+        self.search_phrase_lc = search_string.lower()        # search string to lower case before search
+
+        self.fetch_current_page_from_server()
+
+        # now set the 1st page and show page text
+        self.page_current = 1
+        self.last_focus_path = None
+        self.show_page_text()                    # show the new page text
+        self.update_pile_with_current_buttons()  # show the new buttons

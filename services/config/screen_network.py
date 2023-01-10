@@ -1,19 +1,204 @@
 from os import system
+from time import time
 import urwid
-import logging
+from loguru import logger as app_log
+import copy
+import threading
 from urwid_helpers import create_my_button, create_header_footer, create_edit, MyCheckBox, dialog
 from utils import settings_load, on_cancel, back_to_main_menu, setting_get_bool, on_editline_changed, \
-    on_checkbox_changed, setting_get_merged
+    on_checkbox_changed, setting_get_merged, text_to_file, system_custom
 import shared
-import netifaces as ni
-import dns.resolver
 from IPy import IP
-import subprocess
-
-app_log = logging.getLogger()
 
 
-def create_setting_row(label, what, value, col1w, col2w, reverse=False, setting_name=None, return_widget=False):
+def ip_prefix_to_netmask(prefix):
+    """ convert IP prefix number to netmask, e.g. 24 to 255.255.255.0 """
+    prefix = int(prefix)        # from str to int if needed
+
+    mask_binary = ""
+
+    for i in range(32):         # generate binary string, e.g. 11111111111110000
+        mask_binary += '1' if i < prefix else '0'
+
+        if i in [7, 15, 23]:    # separate bytes with columns
+            mask_binary += ':'
+
+    parts = mask_binary.split(':')  # split to individual bytes
+
+    for i in range(4):              # from binary to decimal
+        parts[i] = str(int(parts[i], 2))
+
+    mask = ".".join(parts)          # individual decimal numbers to net.mask.with.dots
+    return mask
+
+
+def netmask_to_ip_prefix(netmask):
+    """ convert netmask to IP prefix number, e.g. 255.255.255.0 to 24 """
+
+    if not netmask:         # None or empty netmask?
+        return 0
+
+    ones = 0
+    parts = netmask.split('.')                  # split 255.255.255.0 to ["255", "255", "255", "0"]
+
+    for part in parts:
+        int10 = int(part)                       # string to int
+        int2 = bin(int10)                       # decimal to binary, with '0b' in front
+        int2_str = int2.replace("0", "")        # remove zeros
+        int2_str = int2_str.replace("b", "")    # remove 'b'
+        ones += len(int2_str)                   # add length of the rest (just ones) to total count of ones
+
+    return ones
+
+
+def get_interface():
+    """ fetch interface names for ethernet and wifi using nmcli """
+    # run 'nmcli -t -f DEVICE,TYPE,CON-UUID device'
+    # result = subprocess.run(['nmcli', '-t', '-f', 'DEVICE,TYPE,CON-UUID', 'device'], stdout=subprocess.PIPE)
+    # result = result.stdout.decode('utf-8')  # get output as string
+    result, _ = system_custom('nmcli -t -f DEVICE,TYPE,CON-UUID device')
+    lines = result.split('\n')              # split whole result to lines
+
+    eth = wifi = None
+
+    # output from 'nmcli -t device' looks like this:
+    # eno1:ethernet:connected:Wired connection 1
+    for line in lines:                      # go through the individual lines
+        chunks = line.split(':')
+
+        if not chunks or len(chunks) != 3:  # ignore weird lines
+            continue
+
+        device, iftype, con_uuid = chunks
+
+        if iftype == 'ethernet' and not eth:        # found ethernet and don't have ethernet yet? store it
+            eth = (device, con_uuid)
+
+        if iftype == 'wifi' and not wifi:           # found wifi and don't have wifi yet? store it
+            wifi = (device, con_uuid)
+
+    app_log.debug(f"found networks: eth: {eth}, wifi: {wifi}")
+    return eth, wifi
+
+
+def get_interface_settings(con_uuid):
+    """ fetch interface settings specified device using nmcli """
+    # nmcli -t con show [connection_uuid]
+    # result = subprocess.run(['nmcli', '-t', 'con', 'show', con_uuid], stdout=subprocess.PIPE)
+    # result = result.stdout.decode('utf-8')  # get output as string
+    result, _ = system_custom(f'nmcli -t --show-secrets con show {con_uuid}')
+    lines = result.split('\n')              # split whole result to lines
+
+    # output from 'nmcli -t con show con_uuid' looks like this:
+    # GENERAL.DEVICE:eno1
+    # GENERAL.TYPE:ethernet
+    # GENERAL.HWADDR:40:A8:F0:A5:77:AF
+    # GENERAL.MTU:1500
+    # GENERAL.STATE:100 (connected)
+    # GENERAL.CONNECTION:Wired connection 1
+    # GENERAL.CON-PATH:/org/freedesktop/NetworkManager/ActiveConnection/1
+    # WIRED-PROPERTIES.CARRIER:on
+    # IP4.ADDRESS[1]:192.168.123.55/24
+    # IP4.GATEWAY:192.168.123.1
+    # IP4.ROUTE[1]:dst = 0.0.0.0/0, nh = 192.168.123.1, mt = 100
+    # IP4.ROUTE[2]:dst = 192.168.123.0/24, nh = 0.0.0.0, mt = 100
+    # IP4.DNS[1]:192.168.123.1
+    # 802-11-wireless.ssid:jooknet2
+    # 802-11-wireless-security.psk:yourpasswordhere
+
+    settings = {'use_dhcp': True, 'ip': None, 'mask': None, 'gateway': None, 'dns': None,
+                'WIFI_SSID': None, 'WIFI_PSK': None}
+
+    for line in lines:                          # go through the individual lines
+        chunks = line.split(':', maxsplit=1)
+
+        if not chunks or len(chunks) != 2:      # ignore weird lines
+            continue
+
+        key, value = chunks                     # split list to individual vars
+        nmcli_to_simple = {'GENERAL.DEVICE': 'device', 'IP4.ADDRESS[1]': 'ip', 'IP4.GATEWAY': 'gateway',
+                           'IP4.DNS[1]': 'dns', 'ipv4.method': 'use_dhcp',
+                           '802-11-wireless.ssid': 'WIFI_SSID', '802-11-wireless-security.psk': 'WIFI_PSK'}
+
+        if key not in nmcli_to_simple.keys():   # this key is not what we're looking for, skip it
+            continue
+
+        key = nmcli_to_simple.get(key)          # translate nmcli key to simple key
+
+        if key == 'use_dhcp':                   # if this is use_dhcp setting, then it's dhcp when value is 'auto'
+            value = (value == 'auto')
+
+        if key == 'ip':                         # we're dealing with IP + mask here?
+            ip, mask = value, None              # start with value + no mask
+
+            if '/' in ip:                                   # if '/' was found in ip string
+                ip, prefix = ip.split('/', maxsplit=1)      # split string to ip and prefix
+                mask = ip_prefix_to_netmask(prefix)         # prefix to netmask
+
+            settings['ip'] = ip
+            settings['mask'] = mask
+        else:                                   # not dealing with Ip here, just store key + value
+            settings[key] = value
+
+    app_log.debug(f"device: {con_uuid}, settings: {settings}")
+    return settings
+
+
+def cons_get_or_create(eth_not_wifi, values):
+    """ get connections, and if no connections are available, create one """
+
+    cons = get_cons_for_if(eth_not_wifi)        # get existing connections
+
+    if cons:                # got connections? return them
+        return cons
+
+    values['if_type'] = 'ethernet' if eth_not_wifi else 'wifi'
+    values['con_name'] = "con-" + values['if_type']          # con-eth or con-wifi will be used as connection name
+
+    # add single connection
+    cmd = 'nmcli con add con-name {con_name} ifname {if_name} type {if_type}'.format(**values)
+
+    if not eth_not_wifi:        # for wifi also add ssid
+        cmd += ' ssid {WIFI_SSID}'.format(**values)
+
+    system_custom(cmd)          # execute command
+
+    cons = get_cons_for_if(eth_not_wifi)  # get all existing connections
+    return cons
+
+
+def get_cons_for_if(eth_not_wifi):
+    """ fetch all connections for ethernet or wifi """
+    # nmcli -t con show
+    # result = subprocess.run(['nmcli', '-t', 'con', 'show'], stdout=subprocess.PIPE)
+    # result = result.stdout.decode('utf-8')  # get output as string
+    result, _ = system_custom('nmcli -t con show')
+    lines = result.split('\n')              # split whole result to lines
+
+    # output from 'nmcli -t con show' looks like this:
+    # Wired connection 1:275b0764-94eb-4626-ba69-26d861af541c:802-3-ethernet:eno1
+    # docker0:8b0ddfde-1bac-4333-87d4-967e1f4b3814:bridge:docker0
+
+    wanted_type = 'ethernet' if eth_not_wifi else 'wireless'
+    uuids = []
+
+    for line in lines:                          # go through the individual lines
+        chunks = line.split(':')
+
+        if not chunks or len(chunks) < 3:       # ignore weird lines
+            continue
+
+        if wanted_type not in chunks[2]:        # this is not the wanted device type (e.g. ethernet / wifi)
+            continue
+
+        uuids.append(chunks[1])                 # append uuid to list
+
+    app_log.debug(f"wanted_type: {wanted_type}, uuids: {uuids}")
+    return uuids
+
+
+def create_setting_row(label, what, value, col1w, col2w, reverse=False, setting_name=None, return_widget=False,
+                       is_pass=False):
     wret = None     # widget to return
 
     if what == 'checkbox':      # for checkbox
@@ -23,7 +208,8 @@ def create_setting_row(label, what, value, col1w, col2w, reverse=False, setting_
         widget.setting_name = setting_name
         label = "   " + label
     elif what == 'edit':        # for edit line
-        widget, _ = create_edit(setting_name, col2w, on_editline_changed)
+        mask = '*' if is_pass else None
+        widget, _ = create_edit(setting_name, col2w, on_editline_changed, mask=mask)
         wret = widget
         label = "   " + label
     elif what == 'text':
@@ -52,57 +238,6 @@ def create_setting_row(label, what, value, col1w, col2w, reverse=False, setting_
     return cols
 
 
-def get_eth_iface(default=None):
-    return get_iface_for('eth0', 'enp', default)
-
-
-def get_wifi_iface(default=None):
-    return get_iface_for('wlan0', 'wlp', default)
-
-
-def get_iface_for(old_name, predictable_name, default=None):
-    # go through interfaces, find ethernet
-    ifaces = ni.interfaces()
-
-    eth = default
-
-    if old_name in ifaces:        # if eth0 is present, use it
-        return old_name
-
-    # try to look for predictable eth names
-    for iface in ifaces:
-        if iface.startswith(predictable_name):     # this iface name starts with the 'enp', use it
-            eth = iface
-
-    return eth
-
-
-def get_gateway_for_iface(iface):
-    gateways = ni.gateways()[ni.AF_INET]
-
-    for gw in gateways:         # go through the found gateways
-        gw_ip, gw_iface, gw_is_default = gw
-
-        if gw_iface == iface:   # if this gateway is for our iface, return IP
-            return gw_ip
-
-    return ''                   # no gw found
-
-
-def get_iface_use_dhcp(iface):
-    result = subprocess.run(['ip', 'r'], stdout=subprocess.PIPE)        # run 'ip r'
-    result = result.stdout.decode('utf-8')  # get output as string
-    lines = result.split('\n')              # split whole result to lines
-
-    for line in lines:          # go through the individual lines
-        if iface not in line:   # this line is not for this iface, skip rest
-            continue
-
-        return 'dhcp' in line   # use dhcp, if dhcp in the line for this iface
-
-    return True        # iface not found, just enable dhcp
-
-
 def load_network_settings():
     # get hostname
     with open('/etc/hostname') as f:
@@ -110,24 +245,51 @@ def load_network_settings():
         hostname = hostname.strip()
         shared.settings['HOSTNAME'] = hostname
 
-    # get ethernet setting
-    eth = get_eth_iface()
+    shared.settings['ETH_PRESENT'] = False
+    shared.settings['WIFI_PRESENT'] = False
 
-    if eth:     # got some iface name?
-        ni_eth = ni.ifaddresses(eth)
-        shared.settings['ETH_IP'] = ni_eth[ni.AF_INET][0]['addr']
-        shared.settings['ETH_MASK'] = ni_eth[ni.AF_INET][0]['netmask']
-        shared.settings['ETH_GW'] = get_gateway_for_iface(eth)
-        shared.settings['ETH_USE_DHCP'] = get_iface_use_dhcp(eth)
+    # get network interfaces
+    eth, wifi = get_interface()
 
-    # find first DNS
-    dns_resolver = dns.resolver.Resolver()
-    shared.settings['DNS'] = dns_resolver.nameservers[0]
+    if eth:     # got eth device name?
+        shared.settings['ETH_PRESENT'] = True
+
+        setts = get_interface_settings(eth[1])      # get settings
+        shared.settings['ETH_IP'] = setts['ip']
+        shared.settings['ETH_MASK'] = setts['mask']
+        shared.settings['ETH_GW'] = setts['gateway']
+        shared.settings['ETH_USE_DHCP'] = setts['use_dhcp']
+        shared.settings['DNS'] = setts['dns']
+
+    if wifi:    # got wifi device name?
+        shared.settings['WIFI_PRESENT'] = True
+
+        setts = get_interface_settings(wifi[1])     # get settings
+        shared.settings['WIFI_IP'] = setts['ip']
+        shared.settings['WIFI_MASK'] = setts['mask']
+        shared.settings['WIFI_GW'] = setts['gateway']
+        shared.settings['WIFI_USE_DHCP'] = setts['use_dhcp']
+        shared.settings['DNS'] = setts['dns']
+        shared.settings['WIFI_SSID'] = setts['WIFI_SSID']
+        shared.settings['WIFI_PSK'] = setts['WIFI_PSK']
 
 
 def network_create(button):
+    # if saving thread still running, don't show network screen
+    if shared.thread_save_running:
+        dialog(shared.main_loop, shared.current_body,
+               "Your last network changes are still being applied. Please try again in a moment.")
+        return
+
+    _, res = system_custom('which nmcli')         # figure out if we got nmcli installed
+    got_nmcli = res == 0
+
     settings_load()
-    load_network_settings()
+
+    wifi = None
+    if got_nmcli:                       # load network settings only if got nmcli installed
+        load_network_settings()
+        _, wifi = get_interface()
 
     header, footer = create_header_footer('Network settings')
 
@@ -135,7 +297,7 @@ def network_create(button):
     body.append(urwid.Divider())
 
     col1w = 16
-    col2w = 17
+    col2w = 18
 
     # hostname and DNS
     cols = create_setting_row('Hostname', 'edit', '', col1w, col2w, False, 'HOSTNAME')
@@ -162,6 +324,35 @@ def network_create(button):
     body.append(cols)
     body.append(urwid.Divider())
 
+    if wifi:        # show wifi settings only if got wifi
+        # wifi settings
+        cols = create_setting_row('Wifi', 'title', '', col1w, col2w)
+        body.append(cols)
+
+        cols = create_setting_row('Use DHCP', 'checkbox', False, col1w, col2w, False, 'WIFI_USE_DHCP')
+        body.append(cols)
+
+        cols = create_setting_row('IP address', 'edit', '', col1w, col2w, False, 'WIFI_IP')
+        body.append(cols)
+
+        cols = create_setting_row('Mask', 'edit', '', col1w, col2w, False, 'WIFI_MASK')
+        body.append(cols)
+
+        cols = create_setting_row('Gateway', 'edit', '', col1w, col2w, False, 'WIFI_GW')
+        body.append(cols)
+        body.append(urwid.Divider())
+
+        # wifi connection
+        cols = create_setting_row('Wifi connection', 'title', '', col1w, col2w)
+        body.append(cols)
+
+        cols = create_setting_row('Network', 'edit', '', col1w, col2w, False, 'WIFI_SSID')
+        body.append(cols)
+
+        cols = create_setting_row('Password', 'edit', '', col1w, col2w, False, 'WIFI_PSK', is_pass=True)
+        body.append(cols)
+        body.append(urwid.Divider())
+
     # add save + cancel button
     button_save = create_my_button(" Save", network_save)
     button_cancel = create_my_button("Cancel", on_cancel)
@@ -171,187 +362,278 @@ def network_create(button):
     w_body = urwid.Padding(urwid.ListBox(urwid.SimpleFocusListWalker(body)), 'center', 36)
     shared.main.original_widget = urwid.Frame(w_body, header=header, footer=footer)
 
+    if not got_nmcli:       # without nmcli show warning
+        dialog(shared.main_loop, shared.current_body,
+               "nmcli tool not installed. This setting screen doesn't work without it.")
+
 
 def on_net_checkbox_changed(widget, state):
     on_checkbox_changed(widget.setting_name, state)
 
 
-config_file_dhcp = '''
-# The loopback network interface
-auto lo
-iface lo inet loopback
+def network_settings_changed(eth_not_wifi, values):
+    """ check if settings for eth or wifi have changed or not """
+    iface = 'eth' if eth_not_wifi else 'wifi'
+    iface_present = values['ETH_PRESENT'] if eth_not_wifi else values['WIFI_PRESENT']
 
-# The primary network interface
-allow-hotplug {ETH_IF}
-iface {ETH_IF} inet dhcp
-hostname {HOSTNAME}
+    if not iface_present:   # interface is not present, we're ignoring any changes and not saving them
+        app_log.debug(f'{iface} - iface_present: {iface_present}, so network_settings_changed answers False')
+        return False
 
-# The wireless network interface
-allow-hotplug {WLAN_IF}
-iface {WLAN_IF} inet dhcp
-hostname {HOSTNAME}
-    wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
-'''
+    if_keys = ['DNS', 'ETH_USE_DHCP', 'ETH_IP', 'ETH_MASK', 'ETH_GW'] if eth_not_wifi else \
+        ['DNS', 'WIFI_USE_DHCP', 'WIFI_IP', 'WIFI_MASK', 'WIFI_GW', 'WIFI_SSID', 'WIFI_PSK']
 
+    for key in if_keys:                             # go through watched keys
+        if key in shared.settings_changed.keys():   # changed key was found
+            app_log.debug(f'{iface} - changed key {key} found, so network_settings_changed answers True')
+            return True                             # settings have changed
 
-config_file_static = '''
-# The loopback network interface
-auto lo
-iface lo inet loopback
-
-# The primary network interface
-allow-hotplug {ETH_IF}
-auto {ETH_IF}
-iface {ETH_IF} inet static
-address {ETH_IP}
-netmask {ETH_MASK}
-gateway {ETH_GW}
-dns-nameservers {DNS}
-
-# The wireless network interface
-allow-hotplug {WLAN_IF}
-iface {WLAN_IF} inet dhcp
-hostname {HOSTNAME}
-    wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
-'''
+    app_log.debug(f'{iface} - no changed key found, so network_settings_changed answers False')
+    return False        # no settings changed here
 
 
-dhcpcd_file_static = '''
-# Inform the DHCP server of our hostname for DDNS.
-hostname
+def network_settings_good(eth_not_wifi, values):
+    """ check if IP addresses for this interface are good or not """
+    using_dhcp = values['ETH_USE_DHCP'] if eth_not_wifi else values['WIFI_USE_DHCP']
+    iface_present = values['ETH_PRESENT'] if eth_not_wifi else values['WIFI_PRESENT']
+    changed = network_settings_changed(eth_not_wifi, values)    # something changed here or not?
 
-# Use the hardware address of the interface for the Client ID.
-clientid
+    iface = 'eth' if eth_not_wifi else 'wifi'
+    app_log.debug(f'{iface} - changed: {changed}, present: {iface_present}, using_dhcp: {using_dhcp}')
 
-# Persist interface configuration when dhcpcd exits.
-persistent
+    # if interface not present or using dhcp, don't check IP addresses and pretend IPs are all good
+    if not changed or not iface_present or using_dhcp:
+        app_log.debug(f'{iface} - network_settings_good returning True')
+        return True
 
-# Rapid commit support.
-option rapid_commit
+    ip_keys = ['DNS', 'ETH_IP', 'ETH_MASK', 'ETH_GW'] if eth_not_wifi else ['DNS', 'WIFI_IP', 'WIFI_MASK', 'WIFI_GW']
 
-# A list of options to request from the DHCP server.
-option domain_name_servers, domain_name, domain_search, host_name
-option classless_static_routes
+    for name in ip_keys:        # go through the names with IP addresses
+        good = False
 
-# Most distributions have NTP support.
-option ntp_servers
+        try:
+            IP(values[name])    # let IPy try to read the addr
+            good = True
+        except Exception as exc:
+            app_log.warning(f"failed to convert {values[name]} to IP: {str(exc)}")
 
-# A ServerID is required by RFC2131.
-require dhcp_server_identifier
+        if not good:
+            dialog(shared.main_loop, shared.current_body, f"The IP address {values[name]} seems to be invalid!")
+            app_log.debug(f'{iface} - network_settings_good returning False')
+            return False
 
-# Generate Stable Private IPv6 Addresses instead of hardware based ones
-slaac private
-
-# A hook script is provided to lookup the hostname if not set by the DHCP
-# server, but it should not be run by default.
-nohook lookup-hostname
-
-interface {ETH_IF}
-        static ip_address={ETH_IP_SLASH}
-        static routers={ETH_GW}
-        static domain_name_servers={DNS}
-'''
+    # if got here, no exception occured, we're good
+    app_log.debug(f'{iface} - network_settings_good returning True (at the end)')
+    return True
 
 
-dhcpcd_file_dhcp = '''
-# Inform the DHCP server of our hostname for DDNS.
-hostname
+def save_net_settings_dhcp(eth_not_wifi, values):
+    """ save network settings - with dhcp enabled """
+    cons = cons_get_or_create(eth_not_wifi, values)         # get all existing connections
 
-# Use the hardware address of the interface for the Client ID.
-clientid
+    if not cons:                # no connection at this point?
+        app_log.warning(f'cons empty, saving will not work!')
+        return
 
-# Persist interface configuration when dhcpcd exits.
-persistent
+    values['uuid'] = cons[0]  # get uuid of 0th connection
+    system_custom('nmcli con mod {uuid} ipv4.method auto'.format(**values))     # set to dhcp before removing GW & IP
 
-# Rapid commit support.
-option rapid_commit
+    # we need to remove gw and ip when enabling dhcp, otherwise this device will have old static + new dhcp address
+    system_custom('nmcli con mod {uuid} ipv4.gateway ""'.format(**values), shell=True)  # remove gw before removing ip
+    system_custom('nmcli con mod {uuid} ipv4.addresses ""'.format(**values), shell=True)    # remove ip
 
-# A list of options to request from the DHCP server.
-option domain_name_servers, domain_name, domain_search, host_name
-option classless_static_routes
+    system_custom('nmcli con up {uuid}'.format(**values))       # connection up
 
-# Most distributions have NTP support.
-option ntp_servers
 
-# A ServerID is required by RFC2131.
-require dhcp_server_identifier
+def save_net_settings_static(eth_not_wifi, values):
+    """ save network settings - with static ip address """
+    cons = cons_get_or_create(eth_not_wifi, values)         # get all existing connections
 
-# Generate Stable Private IPv6 Addresses instead of hardware based ones
-slaac private
+    if not cons:                # no connection at this point?
+        app_log.warning(f'cons empty, saving will not work!')
+        return
 
-# A hook script is provided to lookup the hostname if not set by the DHCP
-# server, but it should not be run by default.
-nohook lookup-hostname
-'''
+    for uuid in cons:           # existing connections down
+        system_custom(f'nmcli con down {uuid}')
+
+    values['prefix'] = netmask_to_ip_prefix(values['mask'])  # mask from '255.255.255.0' to 24
+    app_log.debug(f'{values["iface_type"]} - using values_out: {values}')
+
+    values['uuid'] = cons[0]    # get uuid of 0th connection
+    system_custom('nmcli con mod {uuid} ipv4.addresses {ip4}/{prefix}'.format(**values))
+    system_custom('nmcli con mod {uuid} ipv4.gateway {gw4}'.format(**values))
+    system_custom('nmcli con mod {uuid} ipv4.dns {dns}'.format(**values))
+    system_custom('nmcli con mod {uuid} ipv4.method manual'.format(**values))       # set 'manual' after ip has been set
+    system_custom(f'nmcli con up {uuid}'.format(**values))                          # connection up
+
+
+def save_net_settings(eth_not_wifi, values_in):
+    """ save network settings (ip, mask, gateway or use DHCP) for ethernet of wifi """
+    iface_type = 'eth' if eth_not_wifi else 'wifi'
+    using_dhcp = values_in['ETH_USE_DHCP'] if eth_not_wifi else values_in['WIFI_USE_DHCP']
+    setting_names = ['DNS', 'ETH_IP', 'ETH_MASK', 'ETH_GW'] if eth_not_wifi else ['DNS', 'WIFI_IP', 'WIFI_MASK', 'WIFI_GW']
+    format_names = ['dns', 'ip4', 'mask', 'gw4']
+
+    values_out = copy.deepcopy(values_in)           # copy all the original values in
+    for i, out_name in enumerate(format_names):     # for these output setting names
+        name_in = setting_names[i]                  # fetch input name
+        values_out[out_name] = values_in[name_in]   # for output key-value fetch input value
+
+    # get interface name
+    eth, wifi = get_interface()
+    values_out['iface_type'] = iface_type
+    values_out['if_name'] = eth[0] if eth_not_wifi else wifi[0]
+
+    if using_dhcp:              # for dhcp - enable auto method
+        save_net_settings_dhcp(eth_not_wifi, values_out)
+    else:                       # for static ip - add new connection
+        save_net_settings_static(eth_not_wifi, values_out)
+
+
+def wifi_get_active_ssid():
+    result, status = system_custom('nmcli -t -f ACTIVE,SSID dev wifi')
+
+    # example output of above command...
+    # yes:jooknet2
+    # no:jooknet2
+    # no:
+    # no:W-HMR-17
+    # no:TP-Link_BC2B
+
+    resp = {'WIFI_SSID': None, 'WIFI_PSK': None}
+
+    lines = result.split('\n')      # whole output to lines
+
+    for line in lines:              # find line with active connection
+        parts = line.split(':')
+
+        if not parts or len(parts) != 2:    # skip weird lines
+            continue
+
+        if parts[0] == 'yes':       # found active connection?
+            return parts[1]
+
+    return None
+
+
+def save_wifi_settings(values):
+    """ save wifi SSID and PSK """
+    _, wifi = get_interface()
+    values_out = {'device': wifi[0], 'ssid': values['WIFI_SSID'], 'psk': values['WIFI_PSK']}
+    app_log.debug(f'save_wifi_settings - values: {values_out}')
+
+    cons = get_cons_for_if(False)       # get existing connections for wifi
+
+    for uuid in cons:                   # delete existing wifi connections
+        app_log.debug(f'deleting wifi connection {uuid}')
+        system_custom(f'nmcli con delete {uuid}')
+
+    system_custom('nmcli radio wifi on')
+    system_custom('nmcli dev wifi connect {ssid} password "{psk}"'.format(**values_out), shell=True)
+    system_custom('nmcli con up {ssid}'.format(**values_out))
+
+
+def network_save_in_thread(values):
+    """ Network settings here are applied using nmcli, with wifi connecting it can take 15 seconds,
+        so we better run this in thread, so the app doesn't look stuck on saving.
+    """
+
+    start = time()
+    app_log.debug('network_save_in_thread started')
+    shared.thread_save_running = True
+
+    if values['eth_changed']:   # if eth changed, save it
+        app_log.debug(f'network_save_in_thread - applying eth changes')
+        save_net_settings(True, values)
+
+    if values['wifi_changed']:  # if wifi changed, save it
+        app_log.debug(f'network_save_in_thread - applying wifi changes')
+        save_wifi_settings(values)
+        save_net_settings(False, values)
+
+    # if something changed, sync and suggest restart
+    if values['hostname_changed'] or values['eth_changed'] or values['wifi_changed']:
+        app_log.debug(f'network_save_in_thread - sync caches and drives')
+        system_custom('sync')
+
+    # calc duration, log message, finish
+    duration = time() - start
+    app_log.debug(f'network_save_in_thread finished in {duration} seconds.')
+    shared.thread_save_running = False
 
 
 def network_save(button):
-    # fetch network settings
-    setting_names = ['HOSTNAME', 'DNS', 'ETH_USE_DHCP', 'ETH_IP', 'ETH_MASK', 'ETH_GW']
+    """ Function will check if network settings seem to be correct and shows a warning if they aren't.
+        Proceeds with saving if everything looks ok.
+    """
 
-    values = {}
-    for name in setting_names:                  # fetch settings by name
-        values[name] = setting_get_merged(name)
+    _, res = system_custom('which nmcli')         # figure out if we got nmcli installed
+    got_nmcli = res == 0
 
-    # verify iP addresses
-    if not values['ETH_USE_DHCP']:      # not using dhcp, check IP addresses
-        ips = ['DNS', 'ETH_IP', 'ETH_MASK', 'ETH_GW']
-
-        for name in ips:                # go through the names with IP addresses
-            good = False
-            try:
-                IP(values[name])      # let IPy try to read the addr
-                good = True
-            except Exception as exc:
-                app_log.warning(f"failed to convert {values[name]} to IP: {str(exc)}")
-
-            if not good:
-                dialog(shared.main_loop, shared.current_body, f"The IP address {values[name]} seems to be invalid!")
-                return
-
-    # if hostname seems to be empty
-    if not values['HOSTNAME']:
-        dialog(shared.main_loop, shared.current_body, f"Hostname seems to be invalid!")
+    if not got_nmcli:                   # no nmcli? just quit now
+        back_to_main_menu(None)
         return
 
-    # get interface names
-    values['ETH_IF'] = get_eth_iface('eth0')
-    values['WLAN_IF'] = get_wifi_iface('wlan0')
+    # fetch network settings
+    setting_names = ['HOSTNAME', 'DNS',
+                     'ETH_PRESENT', 'ETH_USE_DHCP', 'ETH_IP', 'ETH_MASK', 'ETH_GW',
+                     'WIFI_PRESENT', 'WIFI_USE_DHCP', 'WIFI_IP', 'WIFI_MASK', 'WIFI_GW', 'WIFI_SSID', 'WIFI_PSK']
 
-    # if not using dhcp, we also need ip in slash formwat for dhcpcd.conf
-    if not values['ETH_USE_DHCP']:
-        ip_slash_mask = '{}/{}'.format(values['ETH_IP'], values['ETH_MASK'])
-        ip_slash_format = IP(ip_slash_mask, make_net=True).strNormal()
-        values['ETH_IP_SLASH'] = ip_slash_format
+    # fetch settings by name
+    values = {}
+    for name in setting_names:
+        values[name] = setting_get_merged(name)
 
-    # --------------------------
-    # for /etc/network/interface
-    # select the right template and fill with values
-    config = config_file_dhcp if values['ETH_USE_DHCP'] else config_file_static
-    config = config.format(**values)
+    app_log.debug(f"values: {values}")
 
-    # write network settings to file
-    with open("/etc/network/interfaces", "wt") as text_file:
-        text_file.write(config)
+    # verify iP addresses for ethernet
+    if not network_settings_good(True, values):
+        return
 
-    # --------------------------
-    # for /etc/dhcpcd.conf
-    # select the right template and fill with values
-    config = dhcpcd_file_dhcp if values['ETH_USE_DHCP'] else dhcpcd_file_static
-    config = config.format(**values)
+    # verify iP addresses for wifi
+    if not network_settings_good(False, values):
+        return
 
-    # write network settings to file
-    with open("/etc/dhcpcd.conf", "wt") as text_file:
-        text_file.write(config)
+    # check if hostname changed or not
+    hostname_changed = 'HOSTNAME' in shared.settings_changed.keys()
 
-    # --------------------------
-    # for /etc/hostname
-    # write new hostname to file
-    with open("/etc/hostname", "wt") as text_file:
-        text_file.write(values['HOSTNAME'])
+    # if hostname seems to be empty
+    if hostname_changed:
+        if not values['HOSTNAME']:
+            dialog(shared.main_loop, shared.current_body, f"Hostname seems to be invalid!")
+            return
 
-    system('sync')
-    dialog(shared.main_loop, shared.current_body,
-           "Your network settings have been saved. Restart your device for the changes to take effect.")
+        # for /etc/hostname - write new hostname to file
+        text_to_file(values['HOSTNAME'], "/etc/hostname")
 
+    # eth and wifi settings changed or not?
+    eth_changed = network_settings_changed(True, values)
+    wifi_changed = network_settings_changed(False, values)
+
+    # if nothing really changed, go to main menu
+    if not eth_changed and not wifi_changed:
+        back_to_main_menu(None)
+        return
+
+    # if saving thread still running, don't make it run twice
+    if shared.thread_save_running:
+        dialog(shared.main_loop, shared.current_body,
+               "Your last network changes are still being applied. Please try again in a moment.")
+        return
+
+    values['eth_changed'] = eth_changed
+    values['wifi_changed'] = wifi_changed
+    values['hostname_changed'] = hostname_changed
+
+    # create thread and run the eth and wifi saving in thread
+    # note: ',' in (values,) is intentional, otherwise won't pass values as dict but as individual args without it.
+    shared.thread_save = threading.Thread(target=network_save_in_thread, args=(values,))
+    shared.thread_save.start()
+
+    # back to main menu if managed to get here
     back_to_main_menu(None)
+
+    # this dialog will show over main menu
+    dialog(shared.main_loop, shared.current_body,
+        "Your network settings are being applied now. It can take several seconds until they take effect.")
+

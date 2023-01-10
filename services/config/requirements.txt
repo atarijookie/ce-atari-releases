@@ -5,3 +5,6 @@ IPy
 netifaces
 dnspython
 psutil
+python-dotenv
+loguru
+

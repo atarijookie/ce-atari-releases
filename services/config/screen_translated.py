@@ -1,11 +1,9 @@
 import urwid
-import logging
+from loguru import logger as app_log
 from urwid_helpers import create_edit_one, create_my_button, create_header_footer, dialog, \
     create_radio_button_options_rows
 from utils import settings_load, settings_save, on_cancel, back_to_main_menu, setting_get_merged
 import shared
-
-app_log = logging.getLogger()
 
 
 def translated_create(button):
@@ -42,7 +40,6 @@ def translated_create(button):
     add_drive_letter_row(body, 'First translated drive', 'DRIVELETTER_FIRST')
     add_drive_letter_row(body, 'Config drive', 'DRIVELETTER_CONFDRIVE')
     add_drive_letter_row(body, 'Shared drive', 'DRIVELETTER_SHARED')
-    add_drive_letter_row(body, 'ZIP file drive', 'DRIVELETTER_ZIP')
     body.append(urwid.Divider())
 
     body.append(urwid.AttrMap(urwid.Text('Options', align='center'), 'reversed'))
@@ -50,9 +47,17 @@ def translated_create(button):
 
     cols = create_radio_button_options_rows(
         23, "Mount USB media as",
-        [{'value': False, 'text': 'translated'},
-         {'value': True, 'text': 'raw'}],
+        [{'value': 0, 'text': 'translated'},
+         {'value': 1, 'text': 'raw'}],
         "MOUNT_RAW_NOT_TRANS")
+    body.extend(cols)
+    body.append(urwid.Divider())
+
+    cols = create_radio_button_options_rows(
+        23, "Access ZIP files as",
+        [{'value': 0, 'text': 'files'},
+         {'value': 1, 'text': 'dirs'}],
+        "USE_ZIP_DIR")
     body.extend(cols)
     body.append(urwid.Divider())
 
@@ -101,9 +106,8 @@ def translated_save(button):
     first_letter = get_drive_letter('DRIVELETTER_FIRST')
     config_letter = get_drive_letter('DRIVELETTER_CONFDRIVE')
     shared_letter = get_drive_letter('DRIVELETTER_SHARED')
-    zip_letter = get_drive_letter('DRIVELETTER_ZIP')
 
-    letters_list = [first_letter, config_letter, shared_letter, zip_letter]
+    letters_list = [first_letter, config_letter, shared_letter]
     letters_set = set(letters_list)
 
     for letter in letters_list:

@@ -74,7 +74,8 @@ handle_service()
     # $2 - path to config file of the service
 
     pid_file=$( get_setting_from_file PID_FILE $2 )
-    exec_file=$( get_setting_from_file EXEC_FILE $2 )
+    exec_cmd=$( get_setting_from_file EXEC_CMD $2 )
+    desc_cmd=$( get_setting_from_file DESC_CMD $2 )
 
     # now always check first if the app is running
     app_running=$( check_if_pid_running $pid_file )
@@ -97,7 +98,12 @@ handle_service()
             printf "    %-20s starting\n" "$service_name"
             dir_before=$( pwd )                     # remember current dir
             cd $service_dir                         # change to service dir - so the service will be executed from its own dir - to create file there, to use relative paths to its dir
-            eval "$exec_file > /dev/null 2>&1 &"    # start the executable file / script file
+            eval "$exec_cmd > /dev/null 2>&1 &"     # start the executable file / script file
+
+            if [ ! -z "$desc_cmd" ]; then           # desc_cmd var is set?
+                eval "$desc_cmd 2> /dev/null"       # run this command to write description
+            fi
+
             cd $dir_before                          # go back to previous dir
         else
             printf "    %-20s running\n" "$service_name"

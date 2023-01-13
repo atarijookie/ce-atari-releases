@@ -67,7 +67,7 @@ def log_config():
     os.makedirs(os.getenv('LOG_DIR'), exist_ok=True)
     log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(funcName)s(%(lineno)d) %(message)s')
 
-    my_handler = RotatingFileHandler(os.path.join(os.getenv('LOG_DIR'), 'ce_webserver.log'),
+    my_handler = RotatingFileHandler(os.path.join(os.getenv('LOG_DIR'), 'webserver.log'),
                                      mode='a', maxBytes=1024 * 1024, backupCount=1)
     my_handler.setFormatter(log_formatter)
     my_handler.setLevel(logging.DEBUG)
@@ -119,7 +119,7 @@ def template_renderer(app):
     return register_template_endpoint
 
 
-def generate_routes_for_templates(app_in):
+def generate_routes_for_templates(app_in, skip_pages):
     app_in.logger.info("Generating routes for templates (for each worker)")
 
     web_dir = os.path.dirname(os.path.abspath(__file__))
@@ -136,15 +136,18 @@ def generate_routes_for_templates(app_in):
         if not os.path.isfile(full_path) or ext not in['.htm', '.html']:    # not a file or not supported extension?
             continue
 
-        if fname_wo_ext == 'login':     # skip login page as we need this without @require_login
+        if fname_wo_ext in skip_pages:              # skip these pages
             continue
 
         app_in.logger.info(f'Added route /{fname_wo_ext} for template {filename}')
         register_template_endpoint(fname_wo_ext)
 
 
-def get_arg_int(name, default=0):
-    value = request.args.get(name, default)
+def value_to_int(value, default=0):
+    """
+    take input value which is str or None and convert it to integer if possible,
+    return default value if conversion failed
+    """
 
     if value is None:       # don't even try to convert None, just return default
         return default
@@ -158,8 +161,16 @@ def get_arg_int(name, default=0):
     return value
 
 
+def get_arg_int(name, default=0):
+    """
+    Fetch value by name from request, try to convert to int if possible, return default if not possible to convert.
+    """
+    value = request.args.get(name, default)
+    return value_to_int(value, default)
+
+
 def send_to_socket(sock_path, item):
-    """ send an item to core """
+    """ send an item to specified socket """
     try:
         app_log.debug(f"sending {item} to {sock_path}")
         json_item = json.dumps(item)   # dict to json

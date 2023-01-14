@@ -125,11 +125,11 @@ handle_service()
 # go through all the service config files and start / stop / status those services
 echo ""
 
-if [ "$1" = "start" ]; then 
+if [ "$1" = "start" ]; then
     echo "Starting CosmosEx services:"
-elif [ "$1" = "stop" ]; then 
+elif [ "$1" = "stop" ]; then
     echo "Stopping CosmosEx services:"
-elif [ "$1" = "status" ]; then 
+elif [ "$1" = "status" ]; then
     echo "CosmosEx services statuses:"
 fi
 
@@ -137,6 +137,11 @@ for found in /ce/services/*
 do
     if [ -d "$found" ]; then            # if found thing is a dir
         path_cfg="$found/service.cfg"   # construct path to service config file
+        just_service=$( basename $found )    # get just name of the service, e.g. 'floppy'
+
+        if [ ! -z $2 ] && [ "$just_service" != "$2" ]; then    # if name of services was provided in argument to this whole command and this is not this service, skip it
+            continue
+        fi
 
         if [ -f "$path_cfg" ]; then     # if service config file exists
             handle_service $1 $path_cfg

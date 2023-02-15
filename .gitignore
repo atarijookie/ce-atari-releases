@@ -1,4 +1,12 @@
 update/*.current
 __pycache__/
 venv/
- 
+settings/HW_VERSION
+settings/SHARED_ADDRESS
+settings/SHARED_PASSWORD
+settings/SHARED_PATH
+settings/SHARED_USERNAME
+settings/flask_secret_key
+settings/mount_cmd_samba.txt
+update/.idea/
+

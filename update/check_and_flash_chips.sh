@@ -18,12 +18,9 @@ read_from_file()
 }
 
 #--------------------------
-# add execute permissions to scripts and binaries (if they don't have them yet)
-chmod +x /ce/app/cosmosex
-chmod +x /ce/update/flash_stm32
-chmod +x /ce/update/flash_xilinx
-chmod +x /ce/*.sh
-chmod +x /ce/update/*.sh
+# add execute permissions to scripts and binaries
+find /ce/ -type f -name "*.sh" -exec chmod +x {} \;
+find /ce/ -type f -name "*.elf" -exec chmod +x {} \;
 
 #--------------------------
 # check what chips we really need to flash
@@ -91,7 +88,7 @@ fi
 
 #--------------
 # check if it's now HW vs FW mismatch, which might need another Xilinx flashing
-out=$( /ce/app/cosmosex hwinfo )
+out=$( /ce/services/core/cosmosex.elf hwinfo )
 mm=$( echo "$out" | grep 'HWFWMM' )
 
 # if MISMATCH detected, flash xilinx again -- without programmed Hans the HW reporting from app could be wrong, and thus this one is needed to fix the situation

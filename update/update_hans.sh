@@ -16,7 +16,7 @@ fi
 echo "Will use serial port: " $serialport
 #----------------------------------------
 
-/ce/update/flash_stm32 -x -w /ce/update/hans.hex $serialport || exit 1
+/ce/update/flash_stm32.elf -x -w /ce/update/hans.hex $serialport || exit 1
 
 echo " "
 echo ">>> Updating Hans - END"

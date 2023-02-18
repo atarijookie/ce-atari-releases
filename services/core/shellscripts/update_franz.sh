@@ -1,9 +1,9 @@
 #!/bin/sh
-# Hans FW update
+# Franz FW update
 
 echo "----------------------------------"
 echo " "
-echo ">>> Updating Hans - START"
+echo ">>> Updating Franz - START"
 
 #----------------------------------------
 # if symlink serial0 exists, use it, otherwise try to use ttyAMA0
@@ -16,9 +16,9 @@ fi
 echo "Will use serial port: " $serialport
 #----------------------------------------
 
-/ce/update/flash_stm32.elf -x -w /ce/update/hans.hex $serialport || exit 1
+/ce/update/flash_stm32 -y -w /ce/update/franz.hex $serialport
 
 echo " "
-echo ">>> Updating Hans - END"
+echo ">>> Updating Franz - END"
 echo "----------------------------------"
 

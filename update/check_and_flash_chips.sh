@@ -1,1 +1,0 @@
-/shared/ce-atari/scripts_and_settings/check_and_flash_chips.sh

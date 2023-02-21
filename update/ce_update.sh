@@ -6,13 +6,11 @@ if [ $(id -u) != 0 ]; then
   exit 0
 fi
 
-on_exit()
+# get log path, generate current date and logfile with that date, redirect output to log and console
+LOG_DIR=$( /ce/update/getdotenv.sh LOG_DIR "/var/log/ce" )
+NOW=$( date +"%Y%m%d_%H%M%S" )
+LOG_FILE="$LOG_DIR/update_$NOW.log"
 {
-  echo "on exit              : starting CE services"
-  ce start    # start the CosmosEx servivce
-}
-trap on_exit EXIT
-
 echo " "
 echo "Updating CosmosEx from internet, this will take a while."
 echo "DO NOT POWER OFF THE DEVICE!!!"
@@ -54,7 +52,7 @@ settings_restore()
   BACKUP_DIR=/tmp/ce_settings
   echo "restore settings     : $BACKUP_DIR  =>  $SETTINGS_DIR"
 
-  cp -r BACKUP_DIR/* $SETTINGS_DIR
+  cp -r $BACKUP_DIR/* $SETTINGS_DIR
 }
 
 PATH=$PATH:/ce/update                       # add our update folder to path so we can use relative paths when referencing our scripts
@@ -91,7 +89,6 @@ if [ -f $UPDATE_LOCAL ]; then               # update file already exists?
 fi
 
 # do the actual update now
-ce stop                                 # stop CE services
 settings_backup                         # backup CE settings
 
 # unzip archive
@@ -111,7 +108,6 @@ settings_restore                        # restore settings
 flash_chips.sh                          # check what chips we really need to flash and flash those
 
 #--------------------------
-cp "/ce/cosmosex.service" "/etc/systemd/system/cosmosex.service"    # on  update systemctl service
 ln -fs /ce/services/ce.sh /usr/local/bin/ce       # create a symlink to CE script so user can use 'ce' command
 
 # run the post install script
@@ -121,7 +117,9 @@ sync
 # if should reboot after this (e.g. due to network settings reset), do it now
 [ -f /tmp/REBOOT_AFTER_UPDATE ] && rm -f /tmp/REBOOT_AFTER_UPDATE && reboot now && exit 0
 
-# starting of CosmosEx servivce will happen in on_exit handler
+# starting of CosmosEx servivce will happen updater service
 echo " "
 echo "Update done, the software should start up in few seconds.";
 echo " "
+
+} 2>&1 | tee $LOG_FILE    # end of redirect to file and console
